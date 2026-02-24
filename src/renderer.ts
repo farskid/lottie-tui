@@ -1,5 +1,5 @@
-import { DotLottie } from '@lottiefiles/dotlottie-web';
-import { createCanvas } from 'canvas';
+import { DotLottie, type RenderSurface } from '@lottiefiles/dotlottie-web';
+import { createCanvas, createImageData } from 'canvas';
 import fs from 'fs';
 import path from 'path';
 
@@ -31,8 +31,14 @@ export class ThorVGRenderer {
   }
 
   private setupCanvas(): void {
-    this.canvas = createCanvas(this.config.width, this.config.height);
-    this.ctx = this.canvas.getContext('2d');
+    // Use a lightweight RenderSurface instead of node-canvas.
+    // DotLottie renders into its internal WASM buffer; we read pixels
+    // via player.buffer rather than canvas.getContext('2d').getImageData().
+    this.canvas = {
+      width: this.config.width,
+      height: this.config.height,
+    } as RenderSurface;
+    this.ctx = null; // Not needed — we read from player.buffer
   }
 
   /**
@@ -69,33 +75,39 @@ export class ThorVGRenderer {
    * Load animation from data
    */
   async loadAnimationData(animationData: any): Promise<void> {
+    if (Buffer.isBuffer(animationData)) {
+      throw new Error('.lottie files not yet supported, use .json files');
+    }
+
+    // Store animation metadata for fallback frame counting
+    if (animationData && typeof animationData === 'object') {
+      this.animationMeta = {
+        ip: animationData.ip,
+        op: animationData.op,
+        fr: animationData.fr,
+      };
+    }
+
+    // Pass data in the constructor so it loads after WASM initializes.
+    // Calling player.load() separately races with async WASM init.
     this.player = new DotLottie({
       canvas: this.canvas,
       autoplay: false,
       loop: false,
       useFrameInterpolation: true,
-    });
-
-    // Apply custom FPS if specified
-    if (this.config.fps) {
-      // Note: This might need adjustment based on actual DotLottie API
-      this.player.setRenderConfig({
-        ...this.player.renderConfig,
+      data: animationData,
+      renderConfig: {
         devicePixelRatio: 1,
-      });
-    }
-
-    // Apply speed
-    if (this.config.speed && this.config.speed !== 1.0) {
-      this.player.setSpeed(this.config.speed);
-    }
+      },
+      speed: this.config.speed || 1.0,
+    });
 
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         reject(new Error('Animation loading timed out'));
       }, 10000);
 
-      this.player!.addEventListener('ready', () => {
+      this.player!.addEventListener('load', () => {
         clearTimeout(timeout);
         console.log(`✅ Animation loaded: ${this.getTotalFrames()} frames, ${this.getDuration().toFixed(1)}s`);
         resolve();
@@ -105,22 +117,6 @@ export class ThorVGRenderer {
         clearTimeout(timeout);
         reject(new Error(`Failed to load animation: ${String(event)}`));
       });
-
-      // Load the animation
-      if (Buffer.isBuffer(animationData)) {
-        throw new Error('.lottie files not yet supported, use .json files');
-      } else {
-        // Store animation metadata for fallback frame counting
-        if (animationData && typeof animationData === 'object') {
-          this.animationMeta = {
-            ip: animationData.ip,
-            op: animationData.op,
-            fr: animationData.fr,
-          };
-        }
-        // JSON data
-        this.player!.load({ data: animationData });
-      }
     });
   }
 
@@ -132,18 +128,19 @@ export class ThorVGRenderer {
       throw new Error('No animation loaded');
     }
 
-    // Clear canvas with transparent background
-    this.ctx.clearRect(0, 0, this.config.width, this.config.height);
-
-    // Set frame
+    // Set frame — this renders into the internal WASM buffer
     this.player.setFrame(frameNumber);
 
-    // Force a draw - try public methods first
-    // Note: _draw is private, so we'll rely on setFrame to trigger rendering
-    // The canvas should be updated automatically when setFrame is called
+    // Read pixels from the WASM buffer
+    const buf = this.player.buffer;
+    if (!buf || buf.length === 0) {
+      throw new Error(`DotLottie buffer is empty for frame ${frameNumber}`);
+    }
 
-    // Extract image data
-    return this.ctx.getImageData(0, 0, this.config.width, this.config.height);
+    // Create ImageData from the raw RGBA pixel buffer
+    const { width, height } = this.config;
+    const clamped = new Uint8ClampedArray(buf.buffer, buf.byteOffset, buf.byteLength);
+    return createImageData(clamped, width, height) as unknown as ImageData;
   }
 
   /**

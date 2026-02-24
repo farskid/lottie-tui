@@ -53,7 +53,7 @@ export function getTerminalInfo(): TerminalInfo {
 export function clearKittyGraphics(): void {
   if (detectKittyTerminal()) {
     // Clear all images
-    process.stdout.write('\x1b_Ga=d\x1b\\');
+    process.stdout.write('\x1b_Ga=d,q=2\x1b\\');
   }
 }
 

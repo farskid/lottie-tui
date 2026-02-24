@@ -44,6 +44,7 @@ export class KittyGraphics {
       `s=${width}`, // source width
       `v=${height}`, // source height
       `i=${imageId}`, // image id
+      'q=2', // quiet — suppress terminal responses
     ];
 
     if (options.placement === 'replace') {
@@ -88,6 +89,7 @@ export class KittyGraphics {
         `s=${width}`,
         `v=${height}`,
         `i=${animationId}`,
+        'q=2', // quiet — suppress terminal responses
       ];
 
       if (!isFirstFrame) {
@@ -110,6 +112,7 @@ export class KittyGraphics {
     const params = [
       'a=p', // place
       `i=${imageId}`, // image id
+      'q=2', // quiet — suppress terminal responses
     ];
 
     if (loops > 0) {
@@ -124,7 +127,7 @@ export class KittyGraphics {
    * Delete specific image
    */
   deleteImage(imageId: number): void {
-    const escapeSequence = `\x1b_Ga=d,i=${imageId}\x1b\\`;
+    const escapeSequence = `\x1b_Ga=d,i=${imageId},q=2\x1b\\`;
     process.stdout.write(escapeSequence);
     this.uploadedImages.delete(imageId);
   }
@@ -133,7 +136,7 @@ export class KittyGraphics {
    * Clear all uploaded images
    */
   clearAll(): void {
-    const escapeSequence = '\x1b_Ga=d\x1b\\';
+    const escapeSequence = '\x1b_Ga=d,q=2\x1b\\';
     process.stdout.write(escapeSequence);
     this.uploadedImages.clear();
   }
