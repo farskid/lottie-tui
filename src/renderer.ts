@@ -23,6 +23,7 @@ export class ThorVGRenderer {
   private canvas: any; // Node.js Canvas
   private ctx: any; // Canvas 2D Context
   private config: RendererConfig;
+  private animationMeta: { ip?: number; op?: number; fr?: number } = {};
 
   constructor(config: RendererConfig) {
     this.config = config;
@@ -107,10 +108,16 @@ export class ThorVGRenderer {
 
       // Load the animation
       if (Buffer.isBuffer(animationData)) {
-        // .lottie file - need to convert buffer or handle differently
-        // For now, treat as error since we need to handle .lottie files properly
         throw new Error('.lottie files not yet supported, use .json files');
       } else {
+        // Store animation metadata for fallback frame counting
+        if (animationData && typeof animationData === 'object') {
+          this.animationMeta = {
+            ip: animationData.ip,
+            op: animationData.op,
+            fr: animationData.fr,
+          };
+        }
         // JSON data
         this.player!.load({ data: animationData });
       }
@@ -167,15 +174,19 @@ export class ThorVGRenderer {
   getTotalFrames(): number {
     if (!this.player) return 0;
     
-    // If totalFrames is 0, try to calculate from animation data
     const totalFrames = this.player.totalFrames;
     if (totalFrames > 0) {
       return totalFrames;
     }
 
-    // Fallback: calculate from duration and FPS
+    // Fallback: use raw animation metadata (ip/op)
+    if (this.animationMeta.op != null && this.animationMeta.ip != null) {
+      return Math.round(this.animationMeta.op - this.animationMeta.ip);
+    }
+
+    // Last resort: calculate from duration and FPS
     const duration = this.player.duration;
-    const fps = this.config.fps || 60; // Default FPS
+    const fps = this.config.fps || 60;
     return Math.ceil(duration * fps);
   }
 
@@ -183,7 +194,12 @@ export class ThorVGRenderer {
    * Get animation duration in seconds
    */
   getDuration(): number {
-    return this.player?.duration || 0;
+    const d = this.player?.duration || 0;
+    if (d > 0) return d;
+    // Fallback from metadata
+    const frames = this.getTotalFrames();
+    const fps = this.animationMeta.fr || this.config.fps || 60;
+    return frames / fps;
   }
 
   /**
@@ -191,7 +207,7 @@ export class ThorVGRenderer {
    */
   getFrameRate(): number {
     // Try to extract from animation data or use config
-    return this.config.fps || 60;
+    return this.config.fps || this.animationMeta.fr || 60;
   }
 
   /**

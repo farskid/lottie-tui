@@ -21,11 +21,11 @@ program
     console.log('');
 
     // Check if running in Kitty terminal
-    if (!detectKittyTerminal()) {
-      console.error(chalk.red('❌ Error: Not running in Kitty terminal'));
-      console.error(chalk.yellow('This player requires Kitty terminal with graphics protocol support.'));
-      console.error(chalk.gray('Install Kitty: https://sw.kovidgoyal.net/kitty/'));
-      process.exit(1);
+    const isKitty = detectKittyTerminal();
+    if (!isKitty) {
+      console.warn(chalk.yellow('⚠️  Not running in Kitty terminal — using fallback text mode'));
+      console.warn(chalk.gray('For full graphics, install Kitty: https://sw.kovidgoyal.net/kitty/'));
+      console.log('');
     }
 
     try {

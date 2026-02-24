@@ -1,6 +1,6 @@
 import { ThorVGRenderer } from './renderer.js';
 import { KittyGraphics } from './kitty.js';
-import { getTerminalInfo, setupCleanupHandlers } from './terminal.js';
+import { getTerminalInfo, detectKittyTerminal, setupCleanupHandlers } from './terminal.js';
 import chalk from 'chalk';
 
 export interface LottieKittyOptions {
@@ -19,6 +19,7 @@ export class LottieKitty {
   private kittyGraphics: KittyGraphics;
   private options: Required<LottieKittyOptions>;
   private animationId?: number;
+  private isKitty: boolean;
 
   constructor(options: LottieKittyOptions) {
     const termInfo = getTerminalInfo();
@@ -43,6 +44,7 @@ export class LottieKitty {
     });
 
     this.kittyGraphics = new KittyGraphics();
+    this.isKitty = detectKittyTerminal();
 
     // Setup cleanup
     setupCleanupHandlers();
@@ -74,7 +76,9 @@ export class LottieKitty {
       console.log();
 
       // Choose rendering strategy
-      if (this.shouldPreRenderAnimation(totalFrames)) {
+      if (!this.isKitty) {
+        await this.playFallbackMode(totalFrames, duration, frameRate);
+      } else if (this.shouldPreRenderAnimation(totalFrames)) {
         await this.playWithPreRendering();
       } else {
         await this.playWithFramePumping();
@@ -87,6 +91,35 @@ export class LottieKitty {
     } finally {
       this.cleanup();
     }
+  }
+
+  /**
+   * Fallback mode: render frames and print summary info (no Kitty graphics)
+   */
+  private async playFallbackMode(totalFrames: number, duration: number, frameRate: number): Promise<void> {
+    console.log(chalk.blue('📊 Fallback mode — rendering frames to validate animation'));
+    console.log();
+
+    // Render a sample of frames to verify the pipeline works
+    const sampleCount = Math.min(totalFrames, 10);
+    const step = Math.max(1, Math.floor(totalFrames / sampleCount));
+    const { width, height } = this.renderer.getDimensions();
+
+    for (let i = 0; i < totalFrames && i / step < sampleCount; i += step) {
+      const imageData = this.renderer.renderFrame(i);
+      // Compute a simple non-transparent pixel ratio as a sanity check
+      let nonEmpty = 0;
+      for (let p = 3; p < imageData.data.length; p += 4) {
+        if (imageData.data[p] > 0) nonEmpty++;
+      }
+      const coverage = ((nonEmpty / (width * height)) * 100).toFixed(1);
+      console.log(chalk.gray(`  Frame ${String(i).padStart(4)} / ${totalFrames}  — ${coverage}% coverage`));
+    }
+
+    console.log();
+    console.log(chalk.green('✅ Animation is valid and renderable'));
+    console.log(chalk.gray(`   ${totalFrames} frames, ${duration.toFixed(1)}s, ${frameRate} fps, ${width}×${height}px`));
+    console.log(chalk.yellow('   Run in Kitty terminal for full graphical playback.'));
   }
 
   /**
