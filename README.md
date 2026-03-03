@@ -1,80 +1,64 @@
-# 🎬 Lottie Kitty
+# lottie-kitty 🎬
 
-Play Lottie animations directly in your Kitty terminal using ThorVG for high-performance rendering.
+Play [Lottie](https://lottiefiles.com) animations in your terminal.
 
-## ✨ Features
+Uses [ThorVG](https://github.com/nicbarker/thorvg) (via `@lottiefiles/dotlottie-web`) for rendering — same engine as the native players.
 
-- **High-Performance Rendering**: Uses ThorVG via `@lottiefiles/dotlottie-web` for native-speed animation rendering
-- **Kitty Graphics Protocol**: Leverages Kitty's built-in graphics support for smooth animation playback
-- **Aspect Ratio Aware**: Automatically preserves original animation proportions
-- **Terminal Integration**: Detects terminal size and capabilities automatically
+## How it works
 
-## 🚀 Installation
+- **Kitty terminal** → Kitty graphics protocol (full pixel quality)
+- **Everything else** → Half-block characters with truecolor (▀▄) — works in Warp, iTerm2, WezTerm, Hyper, and any terminal with 24-bit color support
+
+Auto-detects your terminal and picks the best renderer.
+
+## Install
 
 ```bash
-# Install dependencies
 npm install
-
-# Build
 npm run build
-
-# Run
-node dist/index.js animation.json
 ```
 
-## 📋 Requirements
-
-- **Kitty Terminal**: This player only works in Kitty terminal with graphics protocol support
-- **Node.js**: Version 18.0.0 or higher
-
-## 🎮 Usage
+## Usage
 
 ```bash
-# Basic usage
+# Basic — auto-detects terminal capabilities
 node dist/index.js animation.json
 
-# With options
-node dist/index.js animation.json --width 400 --fps 30 --loop 5 --speed 1.5
+# Set width (Kitty mode, in pixels)
+node dist/index.js --width 300 animation.json
+
+# Set width (half-block mode, in terminal columns)
+node dist/index.js --cols 60 animation.json
+
+# Force a specific render mode
+node dist/index.js --mode halfblock animation.json
+node dist/index.js --mode kitty animation.json
+
+# Control playback
+node dist/index.js --fps 30 --speed 2 --loop 3 animation.json
 ```
 
-### Options
+## Options
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--width <px>` | Output width in pixels | Auto (50% of terminal width, max 400px) |
-| `--fps <n>` | Override animation frame rate | Use animation's native FPS |
-| `--loop <n>` | Loop count (0 = infinite) | 0 (infinite) |
+| `--width <px>` | Output width in pixels (Kitty mode) | auto |
+| `--cols <n>` | Output width in columns (half-block mode) | 80 |
+| `--fps <n>` | Override frame rate | from file |
+| `--loop <n>` | Loop count (0 = infinite) | 0 |
 | `--speed <n>` | Playback speed multiplier | 1.0 |
+| `--mode <m>` | Render mode: `auto`, `kitty`, `halfblock` | auto |
 
-## 🔧 Development
+## Supported formats
 
-```bash
-# Install dependencies
-npm install
+- `.json` — Lottie JSON files
 
-# Build TypeScript
-npx tsc
+## Requirements
 
-# Test with an animation
-node dist/index.js path/to/animation.json
-```
+- Node.js 18+
+- For best quality: [Kitty terminal](https://sw.kovidgoyal.net/kitty/)
+- For half-block mode: any terminal with truecolor support
 
-## 🐛 Troubleshooting
-
-**"Not running in Kitty terminal"**
-- Make sure you're using Kitty terminal: https://sw.kovidgoyal.net/kitty/
-- Check that `TERM_PROGRAM=kitty` or `TERM=xterm-kitty`
-
-**Animation not rendering**
-- Verify the Lottie file is valid JSON
-- Try with a simpler animation first
-- Check terminal size is adequate for the animation
-
-**Performance issues**
-- Use `--width` to reduce output size
-- Reduce `--fps` for less CPU usage
-- Try different `--speed` values
-
-## 📝 License
+## License
 
 MIT
