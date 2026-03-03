@@ -62,19 +62,81 @@ program
     console.log(chalk.gray(`Frames: ${totalFrames} | FPS: ${frameRate} | Duration: ${renderer.getDuration().toFixed(1)}s`));
     console.log(chalk.blue('🎨 Pre-rendering...'));
 
-    // Pre-render and encode all frames
-    const base64Frames: string[] = [];
-    for (let i = 0; i < totalFrames; i++) {
-      const img = renderer.renderFrame(i);
-      const png = await sharp(Buffer.from(img.data), {
-        raw: { width, height, channels: 4 },
-      }).png({ compressionLevel: 1 }).toBuffer();
-      base64Frames.push(png.toString('base64'));
+    // Render with auto-padding: render once, check bounds, re-render larger if clipped
+    let renderW = width;
+    let renderH = height;
+    let base64Frames: string[] = [];
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const currentRenderer = attempt === 0 ? renderer : new ThorVGRenderer({
+        width: renderW, height: renderH, fps: options.fps || 60, speed,
+      });
+      if (attempt > 0) await currentRenderer.loadAnimation(file);
+
+      const rawFrames: Buffer[] = [];
+      let minX = renderW, minY = renderH, maxX = 0, maxY = 0;
+      const frames = currentRenderer.getTotalFrames();
+
+      for (let i = 0; i < frames; i++) {
+        const img = currentRenderer.renderFrame(i);
+        const buf = Buffer.from(img.data);
+        rawFrames.push(buf);
+
+        for (let y = 0; y < renderH; y++) {
+          for (let x = 0; x < renderW; x++) {
+            const alpha = buf[(y * renderW + x) * 4 + 3];
+            if (alpha > 10) {
+              if (x < minX) minX = x;
+              if (x > maxX) maxX = x;
+              if (y < minY) minY = y;
+              if (y > maxY) maxY = y;
+            }
+          }
+        }
+      }
+
+      if (attempt > 0) currentRenderer.destroy();
+
+      const margin = 4;
+      const touchesEdge = maxX > 0 && (minX <= margin || minY <= margin || maxX >= renderW - margin || maxY >= renderH - margin);
+
+      if (touchesEdge && attempt < 2) {
+        // Scale up by 1.4x and re-render
+        const scale = 1.4;
+        renderW = Math.round(renderW * scale);
+        renderH = Math.round(renderH * scale);
+        console.log(chalk.yellow(`⚠️  Content clipped at edges — re-rendering at ${renderW}x${renderH}`));
+        continue;
+      }
+
+      if (maxX > 0) {
+        const contentW = maxX - minX + 1;
+        const contentH = maxY - minY + 1;
+        console.log(chalk.gray(`Content bounds: ${contentW}x${contentH} within ${renderW}x${renderH} canvas`));
+      }
+
+      // Encode frames
+      base64Frames = [];
+      for (const buf of rawFrames) {
+        const png = await sharp(buf, {
+          raw: { width: renderW, height: renderH, channels: 4 },
+        }).png({ compressionLevel: 1 }).toBuffer();
+        base64Frames.push(png.toString('base64'));
+      }
+      break;
     }
 
     console.log(chalk.green(`✅ ${totalFrames} frames ready. Playing... (Ctrl+C to stop)`));
 
-    // Play — same pattern as working test-play.ts
+    // Reserve vertical space for the image so it doesn't get clipped
+    // Image height in rows ≈ pixelHeight / cellPixelHeight (typically ~14px per cell)
+    const cellHeight = 14;
+    const imageRows = Math.ceil(renderH / cellHeight);
+    // Print blank lines to scroll the terminal and make room
+    process.stdout.write('\n'.repeat(imageRows));
+    // Move cursor back up to where the image should start
+    process.stdout.write(`\x1b[${imageRows}A`);
+
     process.stdout.write('\x1b[?25l\x1b[s');
 
     let interrupted = false;
@@ -86,7 +148,7 @@ program
     while (loopCount < maxLoops && !interrupted) {
       for (const b of base64Frames) {
         if (interrupted) break;
-        process.stdout.write(`\x1b[u\x1b_Ga=T,f=100,s=${width},v=${height},i=99,p=1,C=1,q=2;${b}\x1b\\`);
+        process.stdout.write(`\x1b[u\x1b_Ga=T,f=100,s=${renderW},v=${renderH},i=99,p=1,C=1,q=2;${b}\x1b\\`);
         await new Promise(r => setTimeout(r, frameDuration));
       }
       loopCount++;
