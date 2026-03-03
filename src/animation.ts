@@ -131,41 +131,89 @@ export class LottieKitty {
   }
 
   /**
-   * Play animation by pre-rendering all frames (efficient for loops)
+   * Play animation by pre-rendering all frames, then cycling through them
    */
   private async playWithPreRendering(): Promise<void> {
     console.log(chalk.blue('🎨 Pre-rendering frames...'));
     
     const frames = this.renderer.renderAllFrames();
-    const imageDataArray = frames.map(f => f.imageData);
     
     console.log(chalk.green(`✅ Pre-rendered ${frames.length} frames`));
-    
-    // Upload as animation to Kitty
-    console.log(chalk.blue('📤 Uploading animation to terminal...'));
-    const { width, height } = this.renderer.getDimensions();
-    
-    this.animationId = await this.kittyGraphics.uploadAnimation(imageDataArray, {
-      width,
-      height,
-    });
-
-    console.log(chalk.green('✅ Animation uploaded'));
     console.log(chalk.blue('▶️  Playing...'));
     console.log(chalk.gray('Press Ctrl+C to stop'));
+
+    const { width, height } = this.renderer.getDimensions();
+    const frameRate = this.renderer.getFrameRate();
+    const frameDuration = 1000 / (frameRate * this.options.speed);
+
+    console.log(chalk.green('✅ Ready'));
     console.log();
 
-    // Play the animation
-    this.kittyGraphics.playAnimation(this.animationId, this.options.loop);
+    // Prepare for animation display
+    this.kittyGraphics.hideCursor();
+    this.kittyGraphics.saveCursor(); // Save current cursor position
 
-    // Wait for animation completion if not infinite loop
-    if (this.options.loop > 0) {
-      const duration = this.renderer.getDuration() * this.options.loop / this.options.speed;
-      await this.sleep(duration * 1000);
-    } else {
-      // Infinite loop - wait for Ctrl+C
-      await this.waitForInterrupt();
+    let interrupted = false;
+    const handler = () => { interrupted = true; };
+    process.on('SIGINT', handler);
+
+    const imageId = this.kittyGraphics.getNextImageId();
+    const placementId = this.kittyGraphics.getNextPlacementId();
+    let loopCount = 0;
+    const maxLoops = this.options.loop || Infinity;
+    let isFirstFrame = true;
+
+    try {
+      while (loopCount < maxLoops && !interrupted) {
+        for (let i = 0; i < frames.length && !interrupted; i++) {
+          const start = Date.now();
+
+          if (isFirstFrame) {
+            // First frame: create initial placement
+            await this.kittyGraphics.uploadImageData(frames[i].imageData, {
+              width,
+              height,
+              imageId,
+              placementId,
+              placement: 'new',
+            });
+            isFirstFrame = false;
+          } else {
+            // Subsequent frames: replace in-place
+            // Restore cursor position to ensure consistent placement
+            this.kittyGraphics.restoreCursor();
+            await this.kittyGraphics.replaceImageData(
+              frames[i].imageData, 
+              imageId, 
+              placementId, 
+              width, 
+              height
+            );
+          }
+
+          const elapsed = Date.now() - start;
+          const remaining = frameDuration - elapsed;
+          if (remaining > 0) {
+            await this.sleep(remaining);
+          }
+        }
+        loopCount++;
+      }
+    } finally {
+      // Cleanup
+      this.kittyGraphics.deletePlacement(imageId, placementId);
+      process.off('SIGINT', handler);
+      this.kittyGraphics.restoreCursor();
+      this.kittyGraphics.showCursor();
     }
+  }
+
+  /**
+   * Get current cursor row
+   */
+  private getCurrentRow(): Promise<number> {
+    // Default to a reasonable position if we can't query
+    return Promise.resolve(6); // after the log lines
   }
 
   /**
@@ -181,43 +229,67 @@ export class LottieKitty {
     const frameDuration = 1000 / (frameRate * this.options.speed); // ms per frame
 
     const { width, height } = this.renderer.getDimensions();
-    let imageId: number | undefined;
+    
+    // Prepare for animation display
+    this.kittyGraphics.hideCursor();
+    this.kittyGraphics.saveCursor(); // Save current cursor position
 
+    let interrupted = false;
+    const handler = () => { interrupted = true; };
+    process.on('SIGINT', handler);
+
+    const imageId = this.kittyGraphics.getNextImageId();
+    const placementId = this.kittyGraphics.getNextPlacementId();
     let loopCount = 0;
     const maxLoops = this.options.loop || Infinity;
 
-    while (loopCount < maxLoops) {
-      for (let frame = 0; frame < totalFrames; frame++) {
-        const imageData = this.renderer.renderFrame(frame);
+    try {
+      while (loopCount < maxLoops && !interrupted) {
+        for (let frame = 0; frame < totalFrames && !interrupted; frame++) {
+          const start = Date.now();
+          const imageData = this.renderer.renderFrame(frame);
+          
+          if (frame === 0 && loopCount === 0) {
+            // First frame - create new placement
+            await this.kittyGraphics.uploadImageData(imageData, {
+              width,
+              height,
+              imageId,
+              placementId,
+              placement: 'new',
+            });
+          } else {
+            // Subsequent frames - replace in-place
+            this.kittyGraphics.restoreCursor(); // Ensure consistent position
+            await this.kittyGraphics.replaceImageData(
+              imageData, 
+              imageId, 
+              placementId, 
+              width, 
+              height
+            );
+          }
+
+          // Wait for next frame
+          const elapsed = Date.now() - start;
+          const remaining = frameDuration - elapsed;
+          if (remaining > 0) {
+            await this.sleep(remaining);
+          }
+        }
+
+        loopCount++;
         
-        if (imageId === undefined) {
-          // First frame - create new image
-          imageId = await this.kittyGraphics.uploadImageData(imageData, {
-            width,
-            height,
-            placement: 'new',
-          });
-        } else {
-          // Subsequent frames - replace existing image
-          await this.kittyGraphics.uploadImageData(imageData, {
-            width,
-            height,
-            imageId,
-            placement: 'replace',
-          });
-        }
-
-        // Wait for next frame
-        if (frame < totalFrames - 1) {
-          await this.sleep(frameDuration);
+        if (loopCount < maxLoops && !interrupted) {
+          console.log(chalk.gray(`Loop ${loopCount} completed`));
         }
       }
-
-      loopCount++;
-      
-      if (loopCount < maxLoops) {
-        console.log(chalk.gray(`Loop ${loopCount} completed`));
-      }
+    } finally {
+      // Cleanup
+      this.kittyGraphics.deletePlacement(imageId, placementId);
+      process.off('SIGINT', handler);
+      this.kittyGraphics.restoreCursor();
+      this.kittyGraphics.showCursor();
     }
 
     console.log(chalk.green('🎉 Animation completed'));

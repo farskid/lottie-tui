@@ -4,6 +4,7 @@ export interface KittyImageOptions {
   width: number;
   height: number;
   imageId?: number;
+  placementId?: number;
   placement?: 'new' | 'replace';
   deleteAfter?: boolean;
 }
@@ -14,6 +15,7 @@ export interface KittyImageOptions {
  */
 export class KittyGraphics {
   private imageCounter = 1;
+  private placementCounter = 1;
   private uploadedImages = new Set<number>();
 
   /**
@@ -22,6 +24,7 @@ export class KittyGraphics {
   async uploadImageData(imageData: ImageData, options: KittyImageOptions): Promise<number> {
     const { width, height } = options;
     const imageId = options.imageId || this.imageCounter++;
+    const placementId = options.placementId || this.placementCounter++;
 
     // Convert ImageData to PNG buffer
     const rgbaBuffer = Buffer.from(imageData.data);
@@ -36,22 +39,39 @@ export class KittyGraphics {
     // Encode PNG as base64
     const base64Data = pngBuffer.toString('base64');
 
-    // Build Kitty graphics escape sequence
-    // Format: \x1b_G<options>;<base64data>\x1b\
-    const params = [
-      'a=T', // action = transmit and display
-      'f=100', // format = PNG
-      `s=${width}`, // source width
-      `v=${height}`, // source height
-      `i=${imageId}`, // image id
-      'q=2', // quiet — suppress terminal responses
-    ];
-
+    // Build Kitty graphics escape sequence based on placement strategy
+    let escapeSequence: string;
+    
     if (options.placement === 'replace') {
-      params.push('a=p'); // action = place (replace existing)
+      // When replacing, we transmit new data and associate it with the same image id and placement id
+      // This will replace the existing placement in-place
+      const params = [
+        'a=T', // action = transmit and display
+        'f=100', // format = PNG
+        `s=${width}`, // source width
+        `v=${height}`, // source height
+        `i=${imageId}`, // image id
+        `p=${placementId}`, // placement id
+        'C=1', // don't move cursor
+        'q=2', // quiet — suppress terminal responses
+      ];
+      
+      escapeSequence = `\x1b_G${params.join(',')};${base64Data}\x1b\\`;
+    } else {
+      // New placement - transmit and display
+      const params = [
+        'a=T', // action = transmit and display
+        'f=100', // format = PNG
+        `s=${width}`, // source width
+        `v=${height}`, // source height
+        `i=${imageId}`, // image id
+        `p=${placementId}`, // placement id
+        'C=1', // don't move cursor
+        'q=2', // quiet — suppress terminal responses
+      ];
+      
+      escapeSequence = `\x1b_G${params.join(',')};${base64Data}\x1b\\`;
     }
-
-    const escapeSequence = `\x1b_G${params.join(',')};${base64Data}\x1b\\`;
     
     // Send to terminal
     process.stdout.write(escapeSequence);
@@ -61,62 +81,18 @@ export class KittyGraphics {
   }
 
   /**
-   * Upload all frames as an animation
-   * More efficient for looping animations
+   * Display an already transmitted image at current cursor position
    */
-  async uploadAnimation(frames: ImageData[], options: Omit<KittyImageOptions, 'imageId'>): Promise<number> {
-    const animationId = this.imageCounter++;
-    const { width, height } = options;
-
-    for (let i = 0; i < frames.length; i++) {
-      const frame = frames[i];
-      const rgbaBuffer = Buffer.from(frame.data);
-      const pngBuffer = await sharp(rgbaBuffer, {
-        raw: {
-          width,
-          height,
-          channels: 4,
-        }
-      }).png().toBuffer();
-
-      const base64Data = pngBuffer.toString('base64');
-
-      // First frame creates the animation, subsequent frames add to it
-      const isFirstFrame = i === 0;
-      const params = [
-        isFirstFrame ? 'a=T' : 'a=f', // transmit or add frame
-        'f=100', // PNG format
-        `s=${width}`,
-        `v=${height}`,
-        `i=${animationId}`,
-        'q=2', // quiet — suppress terminal responses
-      ];
-
-      if (!isFirstFrame) {
-        params.push(`z=${i}`); // frame index
-      }
-
-      const escapeSequence = `\x1b_G${params.join(',')};${base64Data}\x1b\\`;
-      process.stdout.write(escapeSequence);
-    }
-
-    this.uploadedImages.add(animationId);
-    return animationId;
-  }
-
-  /**
-   * Play uploaded animation
-   */
-  playAnimation(imageId: number, loops = 0): void {
-    // Place animation with loop control
+  displayImage(imageId: number, placementId?: number): void {
     const params = [
-      'a=p', // place
+      'a=p', // action = place/display
       `i=${imageId}`, // image id
+      'C=1', // don't move cursor
       'q=2', // quiet — suppress terminal responses
     ];
 
-    if (loops > 0) {
-      params.push(`L=${loops}`); // loop count
+    if (placementId !== undefined) {
+      params.push(`p=${placementId}`);
     }
 
     const escapeSequence = `\x1b_G${params.join(',')}\x1b\\`;
@@ -124,12 +100,55 @@ export class KittyGraphics {
   }
 
   /**
-   * Delete specific image
+   * Replace a specific placement with new image data
+   * This is the key method for smooth animation - same ids = in-place replacement
+   */
+  async replaceImageData(imageData: ImageData, imageId: number, placementId: number, width: number, height: number): Promise<void> {
+    // Convert ImageData to PNG buffer
+    const rgbaBuffer = Buffer.from(imageData.data);
+    const pngBuffer = await sharp(rgbaBuffer, {
+      raw: {
+        width,
+        height,
+        channels: 4, // RGBA
+      }
+    }).png().toBuffer();
+
+    // Encode PNG as base64
+    const base64Data = pngBuffer.toString('base64');
+
+    // Use transmit and display (a=T) with same image and placement IDs
+    // This replaces the existing placement without flicker
+    const params = [
+      'a=T', // action = transmit and display
+      'f=100', // format = PNG
+      `s=${width}`, // source width
+      `v=${height}`, // source height
+      `i=${imageId}`, // same image id
+      `p=${placementId}`, // same placement id
+      'C=1', // don't move cursor
+      'q=2', // quiet — suppress terminal responses
+    ];
+    
+    const escapeSequence = `\x1b_G${params.join(',')};${base64Data}\x1b\\`;
+    process.stdout.write(escapeSequence);
+  }
+
+  /**
+   * Delete specific image by id
    */
   deleteImage(imageId: number): void {
-    const escapeSequence = `\x1b_Ga=d,i=${imageId},q=2\x1b\\`;
+    const escapeSequence = `\x1b_Ga=d,d=i,i=${imageId},q=2\x1b\\`;
     process.stdout.write(escapeSequence);
     this.uploadedImages.delete(imageId);
+  }
+
+  /**
+   * Delete specific placement
+   */
+  deletePlacement(imageId: number, placementId: number): void {
+    const escapeSequence = `\x1b_Ga=d,d=i,i=${imageId},p=${placementId},q=2\x1b\\`;
+    process.stdout.write(escapeSequence);
   }
 
   /**
@@ -142,11 +161,54 @@ export class KittyGraphics {
   }
 
   /**
+   * Save cursor position
+   */
+  saveCursor(): void {
+    process.stdout.write('\x1b[s');
+  }
+
+  /**
+   * Restore cursor position
+   */
+  restoreCursor(): void {
+    process.stdout.write('\x1b[u');
+  }
+
+  /**
+   * Hide cursor
+   */
+  hideCursor(): void {
+    process.stdout.write('\x1b[?25l');
+  }
+
+  /**
+   * Show cursor
+   */
+  showCursor(): void {
+    process.stdout.write('\x1b[?25h');
+  }
+
+  /**
+   * Get next available image ID
+   */
+  getNextImageId(): number {
+    return this.imageCounter++;
+  }
+
+  /**
+   * Get next available placement ID
+   */
+  getNextPlacementId(): number {
+    return this.placementCounter++;
+  }
+
+  /**
    * Cleanup all images uploaded by this instance
    */
   cleanup(): void {
     for (const imageId of this.uploadedImages) {
       this.deleteImage(imageId);
     }
+    this.showCursor(); // Ensure cursor is visible
   }
 }
