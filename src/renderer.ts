@@ -1,5 +1,4 @@
 import { DotLottie, type RenderSurface } from '@lottiefiles/dotlottie-web';
-import { createCanvas, createImageData } from 'canvas';
 import fs from 'fs';
 import path from 'path';
 
@@ -140,7 +139,13 @@ export class ThorVGRenderer {
     // Create ImageData from the raw RGBA pixel buffer
     const { width, height } = this.config;
     const clamped = new Uint8ClampedArray(buf.buffer, buf.byteOffset, buf.byteLength);
-    return createImageData(clamped, width, height) as unknown as ImageData;
+    // Create ImageData-compatible object without node-canvas dependency
+    return {
+      data: clamped,
+      width,
+      height,
+      colorSpace: 'srgb'
+    } as ImageData;
   }
 
   /**
