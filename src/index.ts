@@ -35,9 +35,10 @@ program
     // For half-block: width = cols (each col = 1 pixel wide)
     // For kitty: width = pixel width
     const cols = options.cols || Math.min(termCols - 2, 80);
+    // For half-block: render at 4x the col count for supersampling, then downscale
     const width = options.width || (mode === 'kitty'
       ? Math.min(Math.round(termInfo.width * 0.5), 400)
-      : cols); // half-block renders at 1:1 col-to-pixel
+      : cols * 4);
 
     // Read Lottie JSON to calculate aspect ratio
     let aspectRatio = 1;
@@ -183,31 +184,34 @@ async function playHalfBlock(
   loop: number,
 ) {
   // Pre-render all frames as half-block strings
+  // Render at high res internally, then use sharp's Lanczos3 to downscale
   const frameStrings: string[] = [];
   let displayRows = 0;
+  const { default: sharpLib } = await import('sharp');
 
   for (let i = 0; i < totalFrames; i++) {
     const img = renderer.renderFrame(i);
     const buf = Buffer.from(img.data);
 
-    // Downscale to terminal columns if needed
-    let finalBuf: Buffer<ArrayBuffer> = buf;
-    let finalW = renderW;
-    let finalH = renderH;
+    // Downscale to terminal columns using sharp (Lanczos3 — much smoother)
+    const targetW = cols;
+    // Half-block: each cell = 2 vertical pixels, so target height in pixels = displayRows * 2
+    const targetH = Math.round(renderH * (targetW / renderW));
+    // Make height even for clean half-block pairing
+    const evenH = targetH % 2 === 0 ? targetH : targetH + 1;
 
-    if (renderW > cols) {
-      const ds = downscaleRgba(buf, renderW, renderH, cols);
-      finalBuf = ds.buffer as Buffer<ArrayBuffer>;
-      finalW = ds.width;
-      finalH = ds.height;
-    }
+    const downscaled = await sharpLib(buf, {
+      raw: { width: renderW, height: renderH, channels: 4 },
+    })
+      .resize(targetW, evenH, { kernel: 'lanczos3' })
+      .raw()
+      .toBuffer();
 
-    const str = rgbaToHalfBlock(finalBuf, finalW, finalH);
+    const str = rgbaToHalfBlock(downscaled as Buffer<ArrayBuffer>, targetW, evenH);
     frameStrings.push(str);
 
     if (i === 0) {
-      // Count rows from first frame (height / 2, rounded up)
-      displayRows = Math.ceil(finalH / 2);
+      displayRows = Math.ceil(evenH / 2);
     }
   }
 
