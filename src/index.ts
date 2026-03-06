@@ -5,6 +5,7 @@ import chalk from 'chalk';
 import { ThorVGRenderer } from './renderer.js';
 import { detectKittyTerminal, getTerminalInfo } from './terminal.js';
 import { rgbaToHalfBlock, downscaleRgba } from './halfblock.js';
+import { spawn, execSync, type ChildProcess } from 'child_process';
 import sharp from 'sharp';
 import fs from 'fs';
 import path from 'path';
@@ -22,6 +23,7 @@ program
   .option('--loop <n>', 'Loop count (0 = infinite)', (val) => parseInt(val), 0)
   .option('--speed <n>', 'Playback speed multiplier', parseFloat, 1.0)
   .option('--mode <mode>', 'Render mode: auto, kitty, halfblock', 'auto')
+  .option('--audio <file>', 'Audio file to play in sync with the animation')
   .action(async (file: string, options) => {
     const isKitty = detectKittyTerminal();
     const mode: 'kitty' | 'halfblock' =
@@ -40,8 +42,9 @@ program
       ? Math.min(Math.round(termInfo.width * 0.5), 400)
       : cols * 4);
 
-    // Read Lottie JSON to calculate aspect ratio
+    // Read Lottie JSON to calculate aspect ratio and native frame rate
     let aspectRatio = 1;
+    let nativeFps: number | undefined;
     const resolvedPath = path.resolve(file);
     const ext = path.extname(file).toLowerCase();
 
@@ -52,33 +55,224 @@ program
         if (lottieData.w && lottieData.h) {
           aspectRatio = lottieData.h / lottieData.w;
         }
+        if (lottieData.fr) {
+          nativeFps = lottieData.fr;
+        }
       } catch (_) { /* use square fallback */ }
     }
+
+    // When audio is provided, use the Lottie's native FPS to stay in sync
+    // (overriding --fps if set, since audio sync requires correct timing)
+    const fps = options.audio && nativeFps ? nativeFps : (options.fps || nativeFps || 60);
 
     const height = Math.round(width * aspectRatio);
     const speed = options.speed || 1.0;
 
     console.log(chalk.blue('🎬 Lottie Terminal Player'));
     console.log(chalk.gray(`File: ${file} | Mode: ${mode} | Size: ${width}x${height} | Speed: ${speed}x`));
+    if (options.audio) {
+      console.log(chalk.gray(`Audio: ${options.audio}`));
+    }
 
-    const renderer = new ThorVGRenderer({ width, height, fps: options.fps || 60, speed });
+    const renderer = new ThorVGRenderer({ width, height, fps, speed });
     await renderer.loadAnimation(file);
 
     const totalFrames = renderer.getTotalFrames();
     const frameRate = renderer.getFrameRate();
     const frameDuration = 1000 / (frameRate * speed);
 
-    console.log(chalk.gray(`Frames: ${totalFrames} | FPS: ${frameRate} | Duration: ${renderer.getDuration().toFixed(1)}s`));
+    // When audio is provided, detect its duration and stretch animation to match
+    let effectiveFrameDuration = frameDuration;
+    let audioDuration: number | null = null;
+    if (options.audio) {
+      audioDuration = getAudioDuration(options.audio);
+      if (audioDuration) {
+        const animDuration = totalFrames / frameRate;
+        if (Math.abs(audioDuration - animDuration) > 0.5) {
+          // Stretch frame timing so animation duration = audio duration
+          effectiveFrameDuration = (audioDuration * 1000) / totalFrames;
+          console.log(chalk.yellow(`⚠️  Animation: ${animDuration.toFixed(1)}s, Audio: ${audioDuration.toFixed(1)}s — stretching to match`));
+        }
+      }
+    }
+
+    console.log(chalk.gray(`Frames: ${totalFrames} | FPS: ${frameRate} (native: ${nativeFps ?? 'unknown'}) | Duration: ${(totalFrames * effectiveFrameDuration / 1000).toFixed(1)}s`));
+    console.log(chalk.gray(`Frame duration: ${effectiveFrameDuration.toFixed(1)}ms`));
     console.log(chalk.blue('🎨 Pre-rendering...'));
 
+    // Validate audio file if provided
+    if (options.audio) {
+      const audioPath = path.resolve(options.audio);
+      if (!fs.existsSync(audioPath)) {
+        console.error(chalk.red(`Audio file not found: ${audioPath}`));
+        process.exit(1);
+      }
+    }
+
     if (mode === 'kitty') {
-      await playKitty(renderer, file, options, width, height, totalFrames, frameDuration, speed);
+      await playKitty(renderer, file, options, width, height, totalFrames, effectiveFrameDuration, speed, fps);
     } else {
-      await playHalfBlock(renderer, width, height, totalFrames, frameDuration, cols, options.loop);
+      await playHalfBlock(renderer, width, height, totalFrames, effectiveFrameDuration, cols, options.loop, options.audio, speed, fps);
     }
 
     renderer.destroy();
   });
+
+/**
+ * Detect audio file duration in seconds using ffprobe or afinfo
+ */
+function getAudioDuration(audioFile: string): number | null {
+  const audioPath = path.resolve(audioFile);
+  
+  // Try ffprobe first
+  try {
+    const output = execSync(
+      `ffprobe -v quiet -show_entries format=duration -of csv=p=0 "${audioPath}"`,
+      { encoding: 'utf8', timeout: 5000 },
+    ).trim();
+    const dur = parseFloat(output);
+    if (!isNaN(dur) && dur > 0) return dur;
+  } catch (_) {}
+
+  // Try afinfo (macOS)
+  try {
+    const output = execSync(
+      `afinfo "${audioPath}" 2>/dev/null | grep "estimated duration"`,
+      { encoding: 'utf8', timeout: 5000 },
+    ).trim();
+    const match = output.match(/([\d.]+)\s*sec/);
+    if (match) {
+      const dur = parseFloat(match[1]!);
+      if (!isNaN(dur) && dur > 0) return dur;
+    }
+  } catch (_) {}
+
+  return null;
+}
+
+/**
+ * Start audio playback using afplay (macOS) or ffplay (cross-platform fallback)
+ */
+function startAudio(audioFile: string, speed: number): ChildProcess | null {
+  const audioPath = path.resolve(audioFile);
+
+  // Try afplay (macOS built-in)
+  try {
+    const args = [audioPath];
+    if (speed !== 1.0) {
+      args.push('-r', speed.toString());
+    }
+    const proc = spawn('afplay', args, {
+      stdio: ['ignore', 'ignore', 'ignore'],
+      detached: false,
+    });
+    proc.on('error', () => {
+      // afplay not available, try ffplay
+    });
+    return proc;
+  } catch (_) {
+    // Fall through to ffplay
+  }
+
+  // Try ffplay (cross-platform)
+  try {
+    const args = ['-nodisp', '-autoexit', '-loglevel', 'quiet'];
+    if (speed !== 1.0) {
+      args.push('-af', `atempo=${speed}`);
+    }
+    args.push(audioPath);
+    const proc = spawn('ffplay', args, {
+      stdio: ['ignore', 'ignore', 'ignore'],
+      detached: false,
+    });
+    return proc;
+  } catch (_) {
+    console.warn(chalk.yellow('⚠️  No audio player found (tried afplay, ffplay). Playing without audio.'));
+    return null;
+  }
+}
+
+/**
+ * Stop audio playback
+ */
+function stopAudio(proc: ChildProcess | null): void {
+  if (proc && !proc.killed) {
+    proc.kill('SIGTERM');
+  }
+}
+
+/**
+ * Clock-synced playback loop — uses wall clock as master to stay in sync with audio.
+ * Instead of sleeping frameDuration per frame, it calculates which frame should
+ * be displayed based on elapsed time, skipping frames if rendering is slow.
+ */
+async function clockSyncedLoop(
+  frames: string[] | null,
+  base64Frames: string[] | null,
+  renderW: number,
+  renderH: number,
+  totalFrames: number,
+  frameDuration: number,
+  maxLoops: number,
+  audioFile: string | undefined,
+  speed: number,
+  isKitty: boolean,
+  onInterrupt: () => void,
+): Promise<void> {
+  let interrupted = false;
+  let audioProc: ChildProcess | null = null;
+
+  const cleanup = () => {
+    interrupted = true;
+    stopAudio(audioProc);
+    onInterrupt();
+  };
+  process.on('SIGINT', cleanup);
+
+  let loopCount = 0;
+
+  while (loopCount < maxLoops && !interrupted) {
+    // Start audio at the beginning of each loop
+    if (audioFile) {
+      stopAudio(audioProc);
+      audioProc = startAudio(audioFile, speed);
+    }
+
+    const loopStart = Date.now();
+    const loopDuration = totalFrames * frameDuration;
+    let lastFrame = -1;
+
+    while (!interrupted) {
+      const elapsed = Date.now() - loopStart;
+      if (elapsed >= loopDuration) break;
+
+      const currentFrame = Math.min(
+        Math.floor(elapsed / frameDuration),
+        totalFrames - 1,
+      );
+
+      // Only render if we're on a new frame
+      if (currentFrame !== lastFrame) {
+        if (isKitty && base64Frames) {
+          const b = base64Frames[currentFrame]!;
+          process.stdout.write(`\x1b[u\x1b_Ga=T,f=100,s=${renderW},v=${renderH},i=99,p=1,C=1,q=2;${b}\x1b\\`);
+        } else if (frames) {
+          process.stdout.write('\x1b[u');
+          process.stdout.write(frames[currentFrame]!);
+        }
+        lastFrame = currentFrame;
+      }
+
+      // Sleep a short interval then check clock again
+      // Use 2ms for tight sync without burning CPU
+      await new Promise(r => setTimeout(r, 2));
+    }
+
+    loopCount++;
+  }
+
+  stopAudio(audioProc);
+}
 
 /**
  * Kitty graphics protocol playback (with auto-padding)
@@ -92,6 +286,7 @@ async function playKitty(
   totalFrames: number,
   frameDuration: number,
   speed: number,
+  fps: number,
 ) {
   let renderW = width;
   let renderH = height;
@@ -99,7 +294,7 @@ async function playKitty(
 
   for (let attempt = 0; attempt < 3; attempt++) {
     const currentRenderer = attempt === 0 ? renderer : new ThorVGRenderer({
-      width: renderW, height: renderH, fps: options.fps || 60, speed,
+      width: renderW, height: renderH, fps, speed,
     });
     if (attempt > 0) await currentRenderer.loadAnimation(file);
 
@@ -153,20 +348,19 @@ async function playKitty(
   process.stdout.write(`\x1b[${imageRows}A`);
   process.stdout.write('\x1b[?25l\x1b[s');
 
-  let interrupted = false;
-  process.on('SIGINT', () => { interrupted = true; });
-
-  const maxLoops = options.loop || Infinity;
-  let loopCount = 0;
-
-  while (loopCount < maxLoops && !interrupted) {
-    for (const b of base64Frames) {
-      if (interrupted) break;
-      process.stdout.write(`\x1b[u\x1b_Ga=T,f=100,s=${renderW},v=${renderH},i=99,p=1,C=1,q=2;${b}\x1b\\`);
-      await new Promise(r => setTimeout(r, frameDuration));
-    }
-    loopCount++;
-  }
+  await clockSyncedLoop(
+    null,
+    base64Frames,
+    renderW,
+    renderH,
+    totalFrames,
+    frameDuration,
+    options.loop || Infinity,
+    options.audio,
+    speed,
+    true,
+    () => {},
+  );
 
   process.stdout.write(`\x1b_Ga=d,d=i,i=99,q=2\x1b\\\x1b[?25h\n`);
 }
@@ -182,9 +376,10 @@ async function playHalfBlock(
   frameDuration: number,
   cols: number,
   loop: number,
+  audioFile: string | undefined,
+  speed: number,
+  fps: number,
 ) {
-  // Pre-render all frames as half-block strings
-  // Render at high res internally, then use sharp's Lanczos3 to downscale
   const frameStrings: string[] = [];
   let displayRows = 0;
   const { default: sharpLib } = await import('sharp');
@@ -193,11 +388,8 @@ async function playHalfBlock(
     const img = renderer.renderFrame(i);
     const buf = Buffer.from(img.data);
 
-    // Downscale to terminal columns using sharp (Lanczos3 — much smoother)
     const targetW = cols;
-    // Half-block: each cell = 2 vertical pixels, so target height in pixels = displayRows * 2
     const targetH = Math.round(renderH * (targetW / renderW));
-    // Make height even for clean half-block pairing
     const evenH = targetH % 2 === 0 ? targetH : targetH + 1;
 
     const downscaled = await sharpLib(buf, {
@@ -217,27 +409,23 @@ async function playHalfBlock(
 
   console.log(chalk.green(`✅ ${totalFrames} frames ready. Playing... (Ctrl+C to stop)`));
 
-  // Reserve space
   process.stdout.write('\n'.repeat(displayRows));
   process.stdout.write(`\x1b[${displayRows}A`);
   process.stdout.write('\x1b[?25l\x1b[s');
 
-  let interrupted = false;
-  process.on('SIGINT', () => { interrupted = true; });
-
-  const maxLoops = loop || Infinity;
-  let loopCount = 0;
-
-  while (loopCount < maxLoops && !interrupted) {
-    for (const frame of frameStrings) {
-      if (interrupted) break;
-      // Restore cursor and overwrite
-      process.stdout.write('\x1b[u');
-      process.stdout.write(frame);
-      await new Promise(r => setTimeout(r, frameDuration));
-    }
-    loopCount++;
-  }
+  await clockSyncedLoop(
+    frameStrings,
+    null,
+    0,
+    0,
+    totalFrames,
+    frameDuration,
+    loop || Infinity,
+    audioFile,
+    speed,
+    false,
+    () => {},
+  );
 
   process.stdout.write('\x1b[?25h\n');
 }
