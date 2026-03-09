@@ -74,12 +74,10 @@ export class ThorVGRenderer {
    * Load animation from data
    */
   async loadAnimationData(animationData: any): Promise<void> {
-    if (Buffer.isBuffer(animationData)) {
-      throw new Error('.lottie files not yet supported, use .json files');
-    }
+    const isDotLottie = Buffer.isBuffer(animationData);
 
-    // Store animation metadata for fallback frame counting
-    if (animationData && typeof animationData === 'object') {
+    // Store animation metadata for fallback frame counting (JSON only)
+    if (!isDotLottie && animationData && typeof animationData === 'object') {
       this.animationMeta = {
         ip: animationData.ip,
         op: animationData.op,
@@ -89,17 +87,25 @@ export class ThorVGRenderer {
 
     // Pass data in the constructor so it loads after WASM initializes.
     // Calling player.load() separately races with async WASM init.
-    this.player = new DotLottie({
+    const opts: Record<string, any> = {
       canvas: this.canvas,
       autoplay: false,
       loop: false,
       useFrameInterpolation: true,
-      data: animationData,
       renderConfig: {
         devicePixelRatio: 1,
       },
       speed: this.config.speed || 1.0,
-    });
+    };
+
+    if (isDotLottie) {
+      // DotLottie expects an ArrayBuffer for .lottie files
+      opts.data = (animationData as Buffer).buffer;
+    } else {
+      opts.data = animationData;
+    }
+
+    this.player = new DotLottie(opts);
 
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {

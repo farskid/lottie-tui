@@ -51,7 +51,8 @@ lottie-tui --fps 30 --speed 2 --loop 3 animation.json
 
 ## Supported formats
 
-- `.json` — Lottie JSON files
+- `.json` — Lottie JSON
+- `.lottie` — dotLottie (compressed, multi-animation)
 
 ## Requirements
 
