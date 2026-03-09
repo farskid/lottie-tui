@@ -1,11 +1,11 @@
 {
-  "name": "lottie-kitty",
+  "name": "lottie-tui",
   "version": "1.0.0",
-  "description": "Play Lottie animations in Kitty terminal using ThorVG for rendering",
+  "description": "Play Lottie animations in any terminal — pixel-perfect in Kitty, truecolor half-block everywhere else",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "lottie-kitty": "dist/index.js"
+    "lottie-tui": "dist/index.js"
   },
   "scripts": {
     "build": "tsc",

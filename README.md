@@ -1,4 +1,4 @@
-# lottie-kitty 🎬
+# lottie-tui 🎬
 
 Play [Lottie](https://lottiefiles.com) animations in your terminal.
 
@@ -22,20 +22,20 @@ npm run build
 
 ```bash
 # Basic — auto-detects terminal capabilities
-node dist/index.js animation.json
+lottie-tui animation.json
 
 # Set width (Kitty mode, in pixels)
-node dist/index.js --width 300 animation.json
+lottie-tui --width 300 animation.json
 
 # Set width (half-block mode, in terminal columns)
-node dist/index.js --cols 60 animation.json
+lottie-tui --cols 60 animation.json
 
 # Force a specific render mode
-node dist/index.js --mode halfblock animation.json
-node dist/index.js --mode kitty animation.json
+lottie-tui --mode halfblock animation.json
+lottie-tui --mode kitty animation.json
 
 # Control playback
-node dist/index.js --fps 30 --speed 2 --loop 3 animation.json
+lottie-tui --fps 30 --speed 2 --loop 3 animation.json
 ```
 
 ## Options

@@ -13,7 +13,7 @@ import path from 'path';
 const program = new Command();
 
 program
-  .name('lottie-kitty')
+  .name('lottie-tui')
   .description('Play Lottie animations in the terminal using ThorVG')
   .version('1.0.0')
   .argument('<file>', 'Lottie animation file (.json or .lottie)')
